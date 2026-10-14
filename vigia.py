@@ -9,11 +9,11 @@ Lê https://tv.flavio.rio.br/health.php e confere, sem segredos:
   • TVs: entre 8h e 20h (Brasília) com telas cadastradas e NENHUMA online é problema.
 
 Avisa no Telegram só quando o estado muda (ok → problema, problema → ok), no resumo diário (MODO=resumo)
-e, se continuar com problema, a cada 6 h. Sai com código 1 quando há problema: a conclusão da execução
-anterior é o "estado anterior" lido pelo workflow.
+e, se continuar com problema, a cada 6 h. O estado anterior vem de estado/estado.json (cache do Actions);
+a execução sempre termina com sucesso para o GitHub não mandar e-mail de falha a cada checagem.
 
 Variáveis de ambiente: TELEGRAM_TOKEN, TELEGRAM_CHAT, PTV_BASE (padrão https://tv.flavio.rio.br),
-ESTADO_ANTERIOR (success | failure | outro), MODO (resumo | vazio), HORAS_DESDE_OK (float, opcional).
+MODO (resumo | vazio), ESTADO_DIR (pasta do estado, padrão 'estado').
 """
 import json, os, sys, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
@@ -67,16 +67,22 @@ for caminho, nome in (('/', 'painel'), ('/p.php', 'player')):
         problemas.append(f'{nome} fora do ar: {type(e).__name__}')
 
 ok = not problemas
-anterior = os.environ.get('ESTADO_ANTERIOR', '')
-estado_ant = {'success': 'ok', 'failure': 'problema'}.get(anterior, 'desconhecido')
-modo = os.environ.get('MODO', '')
+# Estado entre execuções: arquivo estado/estado.json (o workflow o guarda no cache do Actions). A execução nunca "falha":
+# o GitHub não manda e-mail a cada checagem; o aviso é só pelo Telegram.
+ARQ_ESTADO = os.path.join(os.environ.get('ESTADO_DIR', 'estado'), 'estado.json')
 try:
-    horas_desde_ok = float(os.environ.get('HORAS_DESDE_OK') or 0)
-except ValueError:
-    horas_desde_ok = 0
+    anterior_j = json.load(open(ARQ_ESTADO, encoding='utf-8'))
+except Exception:
+    anterior_j = {}
+estado_ant = anterior_j.get('estado', 'desconhecido')
+modo = os.environ.get('MODO', '')
+agora_ts = int(datetime.now(timezone.utc).timestamp())
+ultimo_ok = int(anterior_j.get('ultimo_ok') or 0)
+ultimo_lembrete = int(anterior_j.get('ultimo_lembrete') or 0)
+horas_desde_ok = (agora_ts - ultimo_ok) / 3600 if ultimo_ok else 0
 
 mudou = (ok and estado_ant == 'problema') or ((not ok) and estado_ant != 'problema')
-lembrete = bool((not ok) and horas_desde_ok >= 6 and int(horas_desde_ok) % 6 == 0)
+lembrete = bool((not ok) and estado_ant == 'problema' and agora_ts - (ultimo_lembrete or ultimo_ok or agora_ts) >= 6 * 3600)  # a cada 6 h enquanto persistir
 avisar = modo == 'resumo' or mudou or lembrete
 
 cab = ('✅ Painel TV: tudo certo' if ok else '❌ Painel TV: atenção')
@@ -88,8 +94,9 @@ msg = cab + '\n' + '\n'.join('• ' + x for x in info + problemas) + '\n(vigia e
 print(msg)
 print(f'[estado anterior: {estado_ant} · mudou: {mudou} · modo: {modo or "-"} · avisar: {avisar}]')
 
-with open(os.environ.get('GITHUB_OUTPUT', os.devnull), 'a') as f:
-    f.write('estado=' + ('ok' if ok else 'problema') + '\n')
+os.makedirs(os.path.dirname(ARQ_ESTADO), exist_ok=True)
+json.dump({'estado': 'ok' if ok else 'problema', 'ultimo_ok': agora_ts if ok else ultimo_ok, 'ultimo_lembrete': agora_ts if (lembrete or mudou) else ultimo_lembrete,
+           'quando': agora_ts, 'resumo': (info + problemas)}, open(ARQ_ESTADO, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 
 if avisar:
     tok, chat = os.environ.get('TELEGRAM_TOKEN', ''), os.environ.get('TELEGRAM_CHAT', '')
@@ -103,4 +110,4 @@ if avisar:
             print('[telegram falhou]', type(e).__name__)
     else:
         print('[telegram não configurado]')
-sys.exit(0 if ok else 1)
+sys.exit(0)  # problema detectado não é falha do vigia; o estado está no arquivo

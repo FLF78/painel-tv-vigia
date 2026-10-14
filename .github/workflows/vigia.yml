@@ -12,7 +12,7 @@ on:
         default: true
 
 permissions:
-  actions: read
+  actions: write   # cache do estado entre execuções
   contents: read
 
 concurrency:
@@ -26,29 +26,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Estado anterior (conclusão da última execução)
-        id: anterior
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          json=$(gh run list -R "$GITHUB_REPOSITORY" --workflow vigia.yml --status completed --limit 40 --json conclusion,createdAt 2>/dev/null || echo '[]')
-          ultimo=$(echo "$json" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r[0]["conclusion"] if r else "")')
-          horas=$(echo "$json" | python3 -c '
-          import json,sys,datetime
-          r=json.load(sys.stdin)
-          ok=[x for x in r if x["conclusion"]=="success"]
-          if not r or not ok: print(0); raise SystemExit
-          t=datetime.datetime.fromisoformat(ok[0]["createdAt"].replace("Z","+00:00"))
-          print(round((datetime.datetime.now(datetime.timezone.utc)-t).total_seconds()/3600, 2))')
-          echo "estado=$ultimo" >> "$GITHUB_OUTPUT"
-          echo "horas_desde_ok=$horas" >> "$GITHUB_OUTPUT"
-          echo "anterior=$ultimo · horas desde o último ok=$horas"
+      # O estado (ok/problema + quando foi o último ok) viaja num cache: a execução NUNCA termina como "falha",
+      # então o GitHub não manda e-mail de "Run failed" a cada checagem — o aviso é só pelo Telegram.
+      - name: Estado anterior (cache)
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: estado
+          key: vigia-estado-${{ github.run_id }}
+          restore-keys: vigia-estado-
 
       - name: Checar o Painel TV
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
-          ESTADO_ANTERIOR: ${{ steps.anterior.outputs.estado }}
-          HORAS_DESDE_OK: ${{ steps.anterior.outputs.horas_desde_ok }}
           MODO: ${{ (github.event.schedule == '0 10 * * *' || (github.event_name == 'workflow_dispatch' && inputs.resumo)) && 'resumo' || '' }}
         run: python3 vigia.py
+
+      - name: Guardar estado (cache)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: estado
+          key: vigia-estado-${{ github.run_id }}
