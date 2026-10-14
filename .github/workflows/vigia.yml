@@ -2,7 +2,7 @@ name: vigia
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # checagem (o GitHub pode atrasar alguns minutos)
+    - cron: '3,18,33,48 * * * *'   # checagem a cada 15 min (minutos fora do :00, que é o horário mais congestionado no GitHub)
     - cron: '0 10 * * *'     # resumo diário às 07:00 de Brasília
   workflow_dispatch:
     inputs:
